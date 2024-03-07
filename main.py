@@ -4,18 +4,11 @@ import os
 from gunicorn.app.base import BaseApplication
 from logging_config import configure_logging
 import logging
+from pdf2docx import Converter
 
 app = Flask(__name__)
 
-class PDF(FPDF):
-    def header(self):
-        self.set_font('Arial', 'B', 12)
-        self.cell(0, 10, 'Ticket', 0, 1, 'C')
-
-    def footer(self):
-        self.set_y(-15)
-        self.set_font('Arial', 'I', 8)
-        self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
+# Removed html_to_pdf function to reduce memory usage and replaced with direct template rendering
 
 @app.route("/", methods=["GET", "POST"])
 def root_route():
@@ -33,30 +26,8 @@ def register():
         lname = request.form['lname']
         email = request.form['email']
         ticket_type = request.form['type']
-        pdf = PDF()
-        pdf.add_page()
-        pdf.set_font("Arial", size=12)
-        pdf.cell(200, 10, txt=f"First Name: {fname}", ln=True)
-        pdf.cell(200, 10, txt=f"Family Name: {lname}", ln=True)
-        pdf.cell(200, 10, txt=f"Email: {email}", ln=True)
-        pdf.cell(200, 10, txt=f"Ticket Type: {ticket_type}", ln=True)
-        pdf_file_path = f"./tickets/{fname}_{lname}_ticket.pdf"
-        os.makedirs(os.path.dirname(pdf_file_path), exist_ok=True)
-        try:
-            pdf.output(pdf_file_path)
-        except Exception as e:
-            app.logger.error(f"Failed to save ticket PDF: {e}")
-            return "Internal Server Error", 500
-        # Save ticket details for purchase history
-        ticket_details = {'fname': fname, 'lname': lname, 'email': email, 'type': ticket_type}
-        tickets = load_tickets()
-        tickets.append(ticket_details)
-        try:
-            save_tickets(tickets)
-        except Exception as e:
-            app.logger.error(f"Failed to save ticket details: {e}")
-            return "Internal Server Error", 500
-        return send_file(pdf_file_path, as_attachment=True)
+        # Directly render the ticket template with the user's information, including a print button
+        return render_template('ticket_template.html', fname=fname, lname=lname, email=email, ticket_type=ticket_type, print_button=True)
     else:
         return render_template('register.html')
 
@@ -94,10 +65,12 @@ def register_user():
         email = request.form['email']
         users = load_users()
         if username in users or email in [user['email'] for user in users.values()]:
-            return render_template('register_user.html', message="Username or Email already exists"), 409
+            # Inform the user if the username or email is already in use
+            return render_template('register_user.html', message="Username or Email already in use. Please choose another.", username=username, email=email)
         users[username] = {'password': password, 'email': email}
         save_users(users)
-        return render_template('register_user.html', message="Registration successful. Redirecting to home page...")
+        # Redirect to the main page after successful registration
+        return redirect(url_for('root_route'))
     return render_template('register_user.html')
 
 @app.route("/admin", methods=["GET"])
@@ -180,37 +153,33 @@ class StandaloneApplication(BaseApplication):
 
 import json
 
-from abilities import key_value_storage
-
 def load_users():
-    response = key_value_storage('retrieve', 'app_users', '', '')
-    if response['upstream_service_result_code'] == 200:
-        return {item['key']: json.loads(item['value']) for item in response['kv_pairs']}
-    else:
+    try:
+        with open('users_data.json', 'r') as file:
+            return json.load(file)
+    except FileNotFoundError:
         return {}
 
 def save_users(users):
-    for username, details in users.items():
-        key_value_storage('store', 'app_users', username, json.dumps(details))
+    with open('users_data.json', 'w') as file:
+        json.dump(users, file)
 
 def load_tickets():
-    response = key_value_storage('retrieve', 'app_tickets', '', '')
-    if response['upstream_service_result_code'] == 200:
-        return [json.loads(item['value']) for item in response['kv_pairs']]
-    else:
+    try:
+        with open('tickets_data.json', 'r') as file:
+            return json.load(file)
+    except FileNotFoundError:
         return []
 
 def save_tickets(tickets):
-    for ticket in tickets:
-        try:
-            key_value_storage('store', 'app_tickets', f"{ticket['fname']}_{ticket['lname']}", json.dumps(ticket))
-        except Exception as e:
-            app.logger.error(f"Error saving ticket: {e}")
-            raise e
+    with open('tickets_data.json', 'w') as file:
+        json.dump(tickets, file)
 
 users = load_users()
 
 if __name__ == "__main__":
     configure_logging()
-    options = {"bind": "%s:%s" % ("0.0.0.0", "8080"), "workers": 4, "loglevel": "info"}
+    app.run(host="0.0.0.0", port=5000)
+else:
+    options = {"bind": "%s:%s" % ("0.0.0.0", "5000"), "workers": 4, "loglevel": "info"}
     StandaloneApplication(app, options).run()
